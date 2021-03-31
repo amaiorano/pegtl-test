@@ -46,6 +46,7 @@ namespace stabs {
     //  6: lower-bound of range (if > upper-bound, is size in bytes)
     //  7: upper-bound of range
 
+    // Primitive type def
     struct type_def_name : plus<seq<identifier, blanks>> {};
     struct type_def_id : digits {};
     struct type_def_range_def_id : digits {};
@@ -56,6 +57,7 @@ namespace stabs {
               one<';'>, type_def_range_upper_bound, one<';'>> {};
     struct type_def : seq<type_def_name, one<':'>, one<'t'>, type_def_id, opt<type_def_range>> {};
 
+    // Variable decl and pointer def
     // a:7
     // p:25=*7
     struct pointer_def_id : digits {};
@@ -63,11 +65,10 @@ namespace stabs {
     struct pointer_def : seq<pointer_def_id, one<'='>, one<'*'>, pointer_ref_id> {};
     struct type_ref_id : digits {};
     struct type_ref : sor<pointer_def, type_ref_id> {};
-
     struct variable_name : identifier {};
     struct variable : seq<variable_name, one<':'>, type_ref> {};
 
-    // Arrays
+    // Array type def and variable decl
     // int c[10][11][12];
     //      .stabs	"c:25=ar26=r26;0;-1;;0;9;27=ar26;0;10;28=ar26;0;11;7",128,0,0,0
     //
@@ -95,20 +96,7 @@ namespace stabs {
 
     struct lsym : sor<array, type_def, variable> {};
 
-    // Types selected in for parse tree
-    template <typename Rule>
-    using selector =
-        parse_tree::selector<Rule, pegtl::parse_tree::store_content::on<
-                                       // array
-                                       array, array_name, array_type_id, array_max_index,
-                                       // type_def
-                                       type_def, type_def_name, type_def_id,
-                                       type_def_range_lower_bound, type_def_range_upper_bound,
-                                       // variable
-                                       variable, type_ref, variable_name, type_ref_id, pointer_def,
-                                       pointer_def_id, pointer_ref_id>>;
-
-    struct param_string : seq<dquote, lsym, dquote> {}; // dquoted_string {};
+    struct param_string : seq<dquote, lsym, dquote> {};
     struct param_type : digits {};
     struct param_other : digits {};
     struct param_desc : digits {};
@@ -133,6 +121,39 @@ namespace stabs {
         : seq<stabd_directive_prefix, param_type, sep, param_other, sep, param_desc> {};
 
     struct grammar : must<seq<sor<stabs_directive, stabd_directive>, eof>> {};
+
+    // Types selected in for parse tree
+    template <typename Rule>
+    using selector =
+        parse_tree::selector<Rule, pegtl::parse_tree::store_content::on<
+                                       // array
+                                       array, array_name, array_type_id, array_max_index,
+                                       // type_def
+                                       type_def, type_def_name, type_def_id,
+                                       type_def_range_lower_bound, type_def_range_upper_bound,
+                                       // variable
+                                       variable, type_ref, variable_name, type_ref_id, pointer_def,
+                                       pointer_def_id, pointer_ref_id>>;
+
+    using Node = pegtl::parse_tree::node;
+
+    void PrintParseTree(const Node& node, int depth = 0) {
+        std::function<void(const Node&, int)> f;
+        f = [&f](const Node& node, int depth) {
+            for (auto d = depth; d-- > 0;)
+                std::cout << " ";
+            std::cout << node.type << ": " << node.string_view() << std::endl;
+            for (auto& c : node.children) {
+                f(*c, depth + 1);
+            }
+        };
+
+        assert(node.is_root()); // Root is the only node with no content
+        for (auto& c : node.children) {
+            f(*c, 0);
+        }
+        std::cout << std::endl;
+    }
 
 } // namespace stabs
 
@@ -175,40 +196,10 @@ int main() {
     for (auto s : source) {
         // pegtl::standard_trace<stabs::grammar>(pegtl::string_input(s, "stabs source"));
         pegtl::string_input in(s, "stabs source");
-
-#if 1
-
-        // struct Node : pegtl::parse_tree::basic_node<Node> {};
-        using Node = pegtl::parse_tree::node;
-
-        if (const auto root = pegtl::parse_tree::parse<stabs::grammar, Node, stabs::selector>(in)) {
+        if (const auto root =
+                pegtl::parse_tree::parse<stabs::grammar, stabs::Node, stabs::selector>(in)) {
             // pegtl::parse_tree::print_dot(std::cout, *root);
-
-            std::function<void(const Node&, int)> f;
-            f = [&f](const Node& node, int depth) {
-                if (node.has_content()) {
-                    for (auto d = depth; d-- > 0;)
-                        std::cout << " ";
-                    std::cout << node.type << ": " << node.string_view() << std::endl;
-                }
-                for (auto& c : node.children) {
-                    f(*c, depth + 1);
-                }
-            };
-
-            f(*root, 0);
+            stabs::PrintParseTree(*root);
         }
-
-        std::cout << std::endl;
-#endif
-
-        // pegtl::string_input in2(s, "stabs source");
-        // std::string output;
-        // if (pegtl::parse<stabs::grammar, stabs::action>(in2, matchHandler)) {
-        //    // std::cout << "\tOutput: " << output << std::endl;
-        //    // std::cout << "Grammar matched" << std::endl;
-        //} else {
-        //    std::cerr << "I don't understand." << std::endl;
-        //}
     }
 }
