@@ -47,18 +47,25 @@ namespace stabs {
     //  7: upper-bound of range
 
     struct type_def_name : plus<seq<identifier, blanks>> {};
-    struct type_def_num : digits {};
-    struct type_def_range_def_num : digits {};
+    struct type_def_id : digits {};
+    struct type_def_range_def_id : digits {};
     struct type_def_range_lower_bound : digits {};
     struct type_def_range_upper_bound : digits {};
     struct type_def_range
-        : seq<one<'='>, one<'r', 'R'>, type_def_range_def_num, one<';'>, type_def_range_lower_bound,
+        : seq<one<'='>, one<'r', 'R'>, type_def_range_def_id, one<';'>, type_def_range_lower_bound,
               one<';'>, type_def_range_upper_bound, one<';'>> {};
-    struct type_def : seq<type_def_name, one<':'>, one<'t'>, type_def_num, opt<type_def_range>> {};
+    struct type_def : seq<type_def_name, one<':'>, one<'t'>, type_def_id, opt<type_def_range>> {};
 
-    struct type_ref_name : identifier {};
-    struct type_ref_num : digits {};
-    struct type_ref : seq<type_ref_name, one<':'>, type_ref_num> {};
+    // a:7
+    // p:25=*7
+    struct pointer_def_id : digits {};
+    struct pointer_ref_id : digits {};
+    struct pointer_def : seq<pointer_def_id, one<'='>, one<'*'>, pointer_ref_id> {};
+    struct type_ref_id : digits {};
+    struct type_ref : sor<pointer_def, type_ref_id> {};
+
+    struct variable_name : identifier {};
+    struct variable : seq<variable_name, one<':'>, type_ref> {};
 
     // Arrays
     // int c[10][11][12];
@@ -75,32 +82,31 @@ namespace stabs {
         : seq<string<'=', 'r'>, digits, one<';'>, digits, one<';'>, digits, one<';'>> {};
 
     struct array_name : identifier {};
-    struct array_type_num : digits {};
+    struct array_type_id : digits {};
     struct array_max_index : digits {};
     // 25=ar26=r26;0;-1;;0;9;
     // 27=ar26;0;10;
     // 28=ar26;0;11;
-    struct array_type : seq<array_type_num, string<'=', 'a', 'r'>, digits, opt<array_subrange>,
+    struct array_type : seq<array_type_id, string<'=', 'a', 'r'>, digits, opt<array_subrange>,
                             one<';'>, digits, one<';'>, array_max_index, one<';'>> {};
     // 7
-    struct terminal_array_type : seq<type_ref_num> {
-    }; // TODO: eventually support pointer defs too (27=*7)
+    struct terminal_array_type : seq<type_ref> {};
     struct array : seq<array_name, one<':'>, plus<array_type>, terminal_array_type> {};
 
-    struct lsym : sor<array, type_def, type_ref> {};
+    struct lsym : sor<array, type_def, variable> {};
 
+    // Types selected in for parse tree
     template <typename Rule>
     using selector =
         parse_tree::selector<Rule, pegtl::parse_tree::store_content::on<
                                        // array
-                                       array, array_name, array_type_num, array_max_index,
+                                       array, array_name, array_type_id, array_max_index,
                                        // type_def
-                                       type_def, type_def_name, type_def_num,
+                                       type_def, type_def_name, type_def_id,
                                        type_def_range_lower_bound, type_def_range_upper_bound,
-                                       // type_ref
-                                       type_ref, type_ref_name, type_ref_num
-
-                                       >>;
+                                       // variable
+                                       variable, type_ref, variable_name, type_ref_id, pointer_def,
+                                       pointer_def_id, pointer_ref_id>>;
 
     struct param_string : seq<dquote, lsym, dquote> {}; // dquoted_string {};
     struct param_type : digits {};
@@ -128,112 +134,6 @@ namespace stabs {
 
     struct grammar : must<seq<sor<stabs_directive, stabd_directive>, eof>> {};
 
-    // Public API
-    struct TypeDef {
-        struct Range {
-            int num = ~0;
-            int lowerBound = 0;
-            int upperBound = 0;
-        };
-
-        std::string name;
-        int num = ~0;
-        std::optional<Range> range;
-    };
-
-    struct TypeRef {
-        std::string name;
-        int num = ~0;
-    };
-
-    // Private
-    struct Callbacks {
-        std::function<void(const TypeDef&)> onTypeDef;
-        std::function<void(const TypeRef&)> onTypeRef;
-    };
-
-    class MatchHandler {
-    public:
-        MatchHandler(Callbacks& callbacks)
-            : m_callbacks(callbacks) {}
-
-        void type_def_name(std::string_view match) {
-            m_curr = TypeDef{};
-            As<TypeDef>().name = match;
-        }
-        void type_def_num(std::string_view match) { //
-            As<TypeDef>().num = stoi(match);
-        }
-        void type_def_range_def_num(std::string_view match) {
-            As<TypeDef>().range = {stoi(match), 0, 0};
-        }
-        void type_def_range_lower_bound(std::string_view match) {
-            As<TypeDef>().range->lowerBound = stoi(match);
-        }
-        void type_def_range_upper_bound(std::string_view match) {
-            As<TypeDef>().range->upperBound = stoi(match);
-        }
-        void type_def(std::string_view match) {
-            m_callbacks.onTypeDef(As<TypeDef>());
-            m_curr = Null{};
-        }
-
-        void type_ref_name(std::string_view match) {
-            m_curr = TypeRef{};
-            As<TypeRef>().name = match;
-        }
-        void type_ref_num(std::string_view match) { //
-            As<TypeRef>().num = stoi(match);
-        }
-        void type_ref(std::string_view match) {
-            m_callbacks.onTypeRef(As<TypeRef>());
-            m_curr = Null{};
-        }
-
-    private:
-        struct Null {};
-        template <typename T>
-        T& As() {
-            return std::get<T>(m_curr);
-        }
-
-        Callbacks& m_callbacks;
-
-        // TODO: stack of these for nested types
-        std::variant<Null, TypeDef, TypeRef> m_curr = Null{};
-    };
-
-    template <typename Rule>
-    struct action {};
-
-#define ACTION_DEF(rule)                                                                           \
-    template <>                                                                                    \
-    struct action<rule> {                                                                          \
-        template <typename ActionInput>                                                            \
-        static void apply(const ActionInput& in, MatchHandler& v) {                                \
-            v.##rule(in.string_view());                                                            \
-        }                                                                                          \
-    }
-
-    ACTION_DEF(type_def_name);
-    ACTION_DEF(type_def_num);
-    ACTION_DEF(type_def_range_def_num);
-    ACTION_DEF(type_def_range_lower_bound);
-    ACTION_DEF(type_def_range_upper_bound);
-    ACTION_DEF(type_def);
-
-    ACTION_DEF(type_ref_name);
-    ACTION_DEF(type_ref_num);
-    ACTION_DEF(type_ref);
-
-    // template <>
-    // struct action<grammar> {
-    //    template <typename ActionInput>
-    //    static void apply(const ActionInput& in, std::string& v) {
-    //        v = in.string();
-    //    }
-    //};
-
 } // namespace stabs
 
 int main() {
@@ -243,31 +143,34 @@ int main() {
     std::vector<const char*> source = {
         //R"(                            204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2)",
         //R"(                            206 ;    .stabd	68, 0, 61)",
-        R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
+
+        //R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
         //R"(                            162 ;	.stabs	"a:7",160,0,0,0)",
         //R"(                             40 ;	.stabs	"int:t7",128,0,0,0)",
         //R"(                             41 ;	.stabs	"char char:t13=r13;0;255;",128,0,0,0)",
         //R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
-        R"(                            162 ;	.stabs	"b:7",160,0,0,0)",
+        //R"(                            162 ;	.stabs	"b:7",160,0,0,0)",
+        //R"(                             86 ;	.stabs	"c:25=ar26=r26;0;-1;;0;9;27=ar26;0;10;28=ar26;0;11;7",128,0,0,0)",
 
-        R"(                             86 ;	.stabs	"c:25=ar26=r26;0;-1;;0;9;27=ar26;0;10;28=ar26;0;11;7",128,0,0,0)",
+        
+        R"(                            167;.stabs	"a:7",128,0,0,7)",
+        R"(                            168;.stabs	"p:25=*7",128,0,0,5)",
+        R"(                            132;.stabs	"b:30=ar28;0;2;22",128,0,0,18)",
+        R"(                            133;.stabs	"pi:31=ar28;0;3;32=*7",128,0,0,10)",
+
+
+        //R"(                            169;.stabs	"p2:25",128,0,0,8)",
+        //R"(                            170;.stabs	"r3:26=*7",128,0,0,10)",
+        //R"(                            171;.stabs	"r4:26",128,0,0,12)",
+        //R"(                            172;.stabs	"pp:27=*25",128,0,0,3)",
+        //R"(                            173;.stabs	"ppp:28=*27",128,0,0,1)",
+        //R"(                            174;.stabs	"rppp:29=*28",128,0,0,14)",
+
+
+
+
     };
     // clang-format on
-
-    stabs::Callbacks callbacks;
-    callbacks.onTypeDef = [](const stabs::TypeDef& typeDef) {
-        std::cout << "onTypeDef: name=" << typeDef.name << " num=" << typeDef.num;
-        if (auto r = typeDef.range) {
-            std::cout << " range{num=" << r->num << " lowerBound=" << r->lowerBound
-                      << " upperBound=" << r->upperBound << "}";
-        }
-        std::cout << std::endl;
-    };
-    callbacks.onTypeRef = [](const stabs::TypeRef& typeRef) {
-        std::cout << "onTypeRef: name=" << typeRef.name << " num=" << typeRef.num << std::endl;
-    };
-
-    stabs::MatchHandler matchHandler(callbacks);
 
     for (auto s : source) {
         // pegtl::standard_trace<stabs::grammar>(pegtl::string_input(s, "stabs source"));
