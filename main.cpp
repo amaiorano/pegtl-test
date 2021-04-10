@@ -22,6 +22,10 @@ namespace {
 namespace stabs {
     using namespace pegtl;
 
+    // Similar to until<R> except that it does not consume R
+    template <typename RULE>
+    struct until_not_at : star<not_at<RULE>, any> {};
+
     struct blanks : star<blank> {};
     struct digits : seq<opt<one<'-'>>, plus<digit>> {};
     struct dquote : one<'\"'> {};
@@ -29,6 +33,7 @@ namespace stabs {
     struct unquoted_string : plus<alnum> {};
     struct dquoted_string : seq<dquote, until<dquote>> {};
     struct sep : seq<blanks, comma, blanks> {};
+    struct file_path : star<sor<alnum, one<'-'>, one<'_'>, one<'/'>, one<'.'>>> {};
 
     // Match stabs type string for N_LSYM: type definitions or variable declarations
     // Type definitions:
@@ -135,10 +140,26 @@ namespace stabs {
 
     struct lsym : sor<struct_, array, enum_, type_def, variable> {};
 
-    struct param_string : seq<dquote, lsym, dquote> {};
-    struct param_type : digits {};
+    struct include_file : file_path {};
+
+    using DEFAULT_PARAM_STRING_RULE = until_not_at<dquote>;
+    template <typename RULE = DEFAULT_PARAM_STRING_RULE>
+    struct param_string : seq<dquote, RULE, dquote> {};
+
+    using DEFAULT_PARAM_TYPE_RULE = until_not_at<comma>;
+    template <typename RULE = DEFAULT_PARAM_TYPE_RULE>
+    struct param_type : seq<RULE> {};
+
+    using DEFAULT_PARAM_OTHER_RULE = until_not_at<comma>;
+    template <typename RULE = DEFAULT_PARAM_OTHER_RULE>
     struct param_other : digits {};
-    struct param_desc : digits {};
+
+    using DEFAULT_PARAM_DESC_RULE = until_not_at<comma>;
+    template <typename RULE = DEFAULT_PARAM_DESC_RULE>
+    struct param_desc : seq<RULE> {};
+
+    using DEFAULT_PARAM_VALUE_RULE = until_not_at<eol>;
+    template <typename RULE = DEFAULT_PARAM_VALUE_RULE>
     struct param_value : unquoted_string {};
 
     struct str_stabs : TAO_PEGTL_STRING(".stabs") {};
@@ -150,14 +171,38 @@ namespace stabs {
     // Match stabs (string) directive
     // Captures: 1:string, 2:type, 3:other, 4:desc, 5:value
     //    204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2
-    struct stabs_directive : seq<stabs_directive_prefix, param_string, sep, param_type, sep,
-                                 param_other, sep, param_desc, sep, param_value> {};
+    template <typename STRING_RULE, typename TYPE_RULE, typename OTHER_RULE, typename DESC_RULE,
+              typename VALUE_RULE>
+    struct stabs_directive_for
+        : seq<stabs_directive_prefix, param_string<STRING_RULE>, sep, param_type<TYPE_RULE>, sep,
+              param_other<OTHER_RULE>, sep, param_desc<DESC_RULE>, sep, param_value<VALUE_RULE>> {};
 
     // Match stabd (dot) directive
     // Captures: 1:type, 2:other, 3:desc
     //    206;.stabd	68, 0, 61
-    struct stabd_directive
-        : seq<stabd_directive_prefix, param_type, sep, param_other, sep, param_desc> {};
+    template <typename TYPE_RULE, typename OTHER_RULE, typename DESC_RULE>
+    struct stabd_directive_for : seq<stabd_directive_prefix, param_type<TYPE_RULE>, sep,
+                                     param_other<OTHER_RULE>, sep, param_desc<DESC_RULE>> {};
+
+    // N_LSYM = 128;  // 0x80 Local variable or type definition
+    struct stabs_directive_lsym
+        : stabs_directive_for<lsym, TAO_PEGTL_STRING("128"), DEFAULT_PARAM_OTHER_RULE,
+                              DEFAULT_PARAM_DESC_RULE, DEFAULT_PARAM_VALUE_RULE> {};
+
+    // N_SOL = 132;   // 0x84 Name of include file
+    struct stabs_directive_include_file
+        : stabs_directive_for<include_file, TAO_PEGTL_STRING("132"), DEFAULT_PARAM_OTHER_RULE,
+                              DEFAULT_PARAM_DESC_RULE, DEFAULT_PARAM_VALUE_RULE> {};
+
+    struct stabs_directive : sor<stabs_directive_lsym, stabs_directive_include_file> {};
+
+    // N_SLINE = 68;  // 0x44 Line number in text segment
+    struct source_current_line : digits {};
+    struct stabd_directive_line
+        : stabd_directive_for<TAO_PEGTL_STRING("68"), DEFAULT_PARAM_OTHER_RULE,
+                              source_current_line> {};
+
+    struct stabd_directive : sor<stabd_directive_line> {};
 
     // Match an instruction line
     // Capture: 1:address
@@ -199,7 +244,11 @@ namespace stabs {
                   // instruction
                   instruction, instr_address,
                   // label
-                  label, label_address, label_name
+                  label, label_address, label_name,
+                  // include_file
+                  include_file,
+                  // line number
+                  source_current_line
 
                   >>;
 
@@ -231,17 +280,16 @@ int main() {
 
     // clang-format off
 	std::vector<const char*> source = {
-		//R"(                            204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2)",
-		//R"(                            206 ;    .stabd	68, 0, 61)",
+		R"(                            204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2)",
+		R"(                            206 ;    .stabd	68, 0, 61)",
 
 		//R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
-		//R"(                            162 ;	.stabs	"a:7",160,0,0,0)",
+		//R"(                            162 ;	.stabs	"a:7",128,0,0,0)",
 		//R"(                             40 ;	.stabs	"int:t7",128,0,0,0)",
 		//R"(                             41 ;	.stabs	"char char:t13=r13;0;255;",128,0,0,0)",
 		//R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
-		//R"(                            162 ;	.stabs	"b:7",160,0,0,0)",
+		//R"(                            162 ;	.stabs	"b:7",128,0,0,0)",
 		//R"(                             86 ;	.stabs	"c:25=ar26=r26;0;-1;;0;9;27=ar26;0;10;28=ar26;0;11;7",128,0,0,0)",
-
 
 		//R"(                            167;.stabs	"a:7",128,0,0,7)",
 		//R"(                            168;.stabs	"p:25=*7",128,0,0,5)",
@@ -256,19 +304,19 @@ int main() {
 		//R"(                            173;.stabs	"ppp:28=*27",128,0,0,1)",
 		//R"(                            174;.stabs	"rppp:29=*28",128,0,0,14)",
 
-        //// Enum
-	    //R"(                             55 ;	.stabs	"bool:t22=eFalse:0,True:1,;",128,0,0,0)",
-        //R"(                             59 ;	.stabs	"WeekDay:t25=eMonday:0,Tuesday:1,Wednesday:2,EndOfDays:2,Foo:-5000,;",128,0,0,0)",
+		//// Enum
+		//R"(                             55 ;	.stabs	"bool:t22=eFalse:0,True:1,;",128,0,0,0)",
+		//R"(                             59 ;	.stabs	"WeekDay:t25=eMonday:0,Tuesday:1,Wednesday:2,EndOfDays:2,Foo:-5000,;",128,0,0,0)",
 
-        //// Struct
-        //R"(                             59;.stabs	"Bar:T25=s3x:7,0,8;y:7,8,8;z:7,16,8;;",128,0,0,0)",
-        //R"(                             63;.stabs	"Foo:T27=s14a:18,0,32;b:22,32,8;c:25,40,16;bar:26,56,24;d:7,80,6;e:7,86,2;f:7,88,8;p:28=*7,96,16;;",128,0,0,0)",
+		//// Struct
+		//R"(                             59;.stabs	"Bar:T25=s3x:7,0,8;y:7,8,8;z:7,16,8;;",128,0,0,0)",
+		//R"(                             63;.stabs	"Foo:T27=s14a:18,0,32;b:22,32,8;c:25,40,16;bar:26,56,24;d:7,80,6;e:7,86,2;f:7,88,8;p:28=*7,96,16;;",128,0,0,0)",
 
-        //// Instruction
-        //R"(   0095 C6 2A         [ 2]   73 	ldb	#42	; D.1687,)"
+		//// Instruction
+		//R"(   0095 C6 2A         [ 2]   73 	ldb	#42	; D.1687,)"
 
-        // Label
-        R"(   0098                      77 Lscope1:)"
+	 //   // Label
+		//R"(   0098                      77 Lscope1:)"
 
 	};
     // clang-format on
