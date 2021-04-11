@@ -160,7 +160,7 @@ namespace stabs {
 
     using DEFAULT_PARAM_VALUE_RULE = until_not_at<eol>;
     template <typename RULE = DEFAULT_PARAM_VALUE_RULE>
-    struct param_value : unquoted_string {};
+    struct param_value : seq<RULE> {};
 
     struct str_stabs : TAO_PEGTL_STRING(".stabs") {};
     struct str_stabd : TAO_PEGTL_STRING(".stabd") {};
@@ -185,24 +185,66 @@ namespace stabs {
                                      param_other<OTHER_RULE>, sep, param_desc<DESC_RULE>> {};
 
     // N_LSYM = 128;  // 0x80 Local variable or type definition
+    // 95 ;	.stabs	"a:7",128,0,0,0
     struct stabs_directive_lsym
         : stabs_directive_for<lsym, TAO_PEGTL_STRING("128"), DEFAULT_PARAM_OTHER_RULE,
                               DEFAULT_PARAM_DESC_RULE, DEFAULT_PARAM_VALUE_RULE> {};
 
     // N_SOL = 132;   // 0x84 Name of include file
+    // 80 ;	.stabs	"src/main.cpp",132,0,0,Ltext2
     struct stabs_directive_include_file
         : stabs_directive_for<include_file, TAO_PEGTL_STRING("132"), DEFAULT_PARAM_OTHER_RULE,
                               DEFAULT_PARAM_DESC_RULE, DEFAULT_PARAM_VALUE_RULE> {};
 
-    struct stabs_directive : sor<stabs_directive_lsym, stabs_directive_include_file> {};
+    // https://sourceware.org/gdb/current/onlinedocs/stabs/Statics.html#Statics
+    // 107 ;	.stabs	"var_const:S7",36,0,0,__ZL9var_const
+    // 108;     .stabs	"var_init:S7", 38, 0, 0, __ZL8var_init
+    // 109;     .stabs	"var_noinit:S7", 40, 0, 0, __ZL10var_noinit
+    // 94 ;	    .stabs	"main:F7",36,0,0,_main
+    // 101 ;	.stabs	"c_a:S7",36,0,0,__ZL3c_a
+    // 105;     .stabs	"var_s_local:V7", 38, 0, 0, __ZZ4mainE11var_s_local
+    //
+    // S means file static, V means function static, F means function
+    // These constant names aren't very meaningful or good.
+    // N_FUN = 36;    // 0x24 Text section (compile-time initialized - functions, constants)
+    // N_STSYM = 38;  // 0x26 Data section (runtime initialized - i.e. ctor calls)
+    // N_LCSYM = 40;  // 0x28 BSS section (uninitialized)
+
+    struct symbol_name : identifier {};
+    struct symbol_id : digits {};
+    struct symbol_type_function : one<'F'> {};
+    struct symbol_type_file_static : one<'S'> {};
+    struct symbol_type_function_static : one<'V'> {};
+    struct section_symbol
+        : seq<symbol_name, one<':'>,
+              sor<symbol_type_function, symbol_type_file_static, symbol_type_function_static>,
+              symbol_id> {};
+
+    struct section_symbol_label : DEFAULT_PARAM_VALUE_RULE {};
+
+    struct stabs_directive_section_symbol
+        : stabs_directive_for<
+              section_symbol,
+              // TODO: we might want to know which section symbol is in
+              sor<TAO_PEGTL_STRING("36"), TAO_PEGTL_STRING("38"), TAO_PEGTL_STRING("40")>,
+              DEFAULT_PARAM_OTHER_RULE, DEFAULT_PARAM_DESC_RULE, section_symbol_label> {};
+
+    struct stabs_directive
+        : sor<stabs_directive_lsym, stabs_directive_include_file, stabs_directive_section_symbol> {
+    };
 
     // N_SLINE = 68;  // 0x44 Line number in text segment
+    // 70 ;	.stabd	68,0,3
     struct source_current_line : digits {};
     struct stabd_directive_line
         : stabd_directive_for<TAO_PEGTL_STRING("68"), DEFAULT_PARAM_OTHER_RULE,
                               source_current_line> {};
 
     struct stabd_directive : sor<stabd_directive_line> {};
+
+    // TODO:
+    // constexpr auto N_LBRAC = 192; // 0xC0 Left brace (open scope)
+    // constexpr auto N_RBRAC = 224; // 0xE0 Right brace (close scope)
 
     // Match an instruction line
     // Capture: 1:address
@@ -248,7 +290,11 @@ namespace stabs {
                   // include_file
                   include_file,
                   // line number
-                  source_current_line
+                  source_current_line,
+                  // symbols
+                  stabs_directive_section_symbol, /*section_symbol,*/ symbol_name, symbol_id,
+                  symbol_type_function, symbol_type_file_static, symbol_type_function_static,
+                  section_symbol_label
 
                   >>;
 
@@ -280,8 +326,8 @@ int main() {
 
     // clang-format off
 	std::vector<const char*> source = {
-		R"(                            204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2)",
-		R"(                            206 ;    .stabd	68, 0, 61)",
+		//R"(                            204 ;	.stabs	"src/vectrexy.h",132,0,0,Ltext2)",
+		//R"(                            206 ;    .stabd	68, 0, 61)",
 
 		//R"(                             31 ;	.stabs	"complex long double:t3=R3;8;0;",128,0,0,0)",
 		//R"(                            162 ;	.stabs	"a:7",128,0,0,0)",
@@ -317,6 +363,15 @@ int main() {
 
 	 //   // Label
 		//R"(   0098                      77 Lscope1:)"
+
+        // Text segment symbol
+        R"(                             107 ;	.stabs	"var_const:S7",36,0,0,__ZL9var_const)",
+        R"(                             108;.stabs	"var_init:S7", 38, 0, 0, __ZL8var_init)",
+        R"(                             109;.stabs	"var_noinit:S7", 40, 0, 0, __ZL10var_noinit)",
+        R"(                             94 ;	    .stabs	"main:F7",36,0,0,_main)",
+        R"(                             101 ;	.stabs	"c_a:S7",36,0,0,__ZL3c_a)",
+        R"(                             105;.stabs	"var_s_local:V7", 38, 0, 0, __ZZ4mainE11var_s_local)"
+
 
 	};
     // clang-format on
