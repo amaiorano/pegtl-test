@@ -164,9 +164,11 @@ namespace stabs {
 
     struct str_stabs : TAO_PEGTL_STRING(".stabs") {};
     struct str_stabd : TAO_PEGTL_STRING(".stabd") {};
+    struct str_stabn : TAO_PEGTL_STRING(".stabn") {};
 
     struct stabs_directive_prefix : seq<until<str_stabs>, blanks> {};
     struct stabd_directive_prefix : seq<until<str_stabd>, blanks> {};
+    struct stabn_directive_prefix : seq<until<str_stabn>, blanks> {};
 
     // Match stabs (string) directive
     // Captures: 1:string, 2:type, 3:other, 4:desc, 5:value
@@ -183,6 +185,14 @@ namespace stabs {
     template <typename TYPE_RULE, typename OTHER_RULE, typename DESC_RULE>
     struct stabd_directive_for : seq<stabd_directive_prefix, param_type<TYPE_RULE>, sep,
                                      param_other<OTHER_RULE>, sep, param_desc<DESC_RULE>> {};
+
+    // Match stabn (number) directive
+    // Captures: 1:type, 2:other, 3:desc, 4:value
+    //    869;.stabn	192, 0, 0, LBB8
+    template <typename TYPE_RULE, typename OTHER_RULE, typename DESC_RULE, typename VALUE_RULE>
+    struct stabn_directive_for
+        : seq<stabn_directive_prefix, param_type<TYPE_RULE>, sep, param_other<OTHER_RULE>, sep,
+              param_desc<DESC_RULE>, sep, param_value<VALUE_RULE>> {};
 
     // N_LSYM = 128;  // 0x80 Local variable or type definition
     // 95 ;	.stabs	"a:7",128,0,0,0
@@ -246,6 +256,16 @@ namespace stabs {
     // constexpr auto N_LBRAC = 192; // 0xC0 Left brace (open scope)
     // constexpr auto N_RBRAC = 224; // 0xE0 Right brace (close scope)
 
+    // template <typename TYPE_RULE, typename OTHER_RULE, typename DESC_RULE, typename VALUE_RULE>
+    struct left_brace : TAO_PEGTL_STRING("192") {};
+    struct right_brace : TAO_PEGTL_STRING("224") {};
+
+    struct stabn_directive_brace
+        : stabn_directive_for<sor<left_brace, right_brace>, DEFAULT_PARAM_OTHER_RULE,
+                              DEFAULT_PARAM_DESC_RULE, DEFAULT_PARAM_VALUE_RULE> {};
+
+    struct stabn_directive : sor<stabn_directive_brace> {};
+
     // Match an instruction line
     // Capture: 1:address
     //   072B AE E4         [ 5]  126 	ldx	,s	; tmp33, dest
@@ -261,14 +281,16 @@ namespace stabs {
     struct label : seq<blanks, label_address, blanks, plus<digits>, blanks, label_name, one<':'>> {
     };
 
-    struct grammar : must<seq<sor<instruction, label, stabs_directive, stabd_directive>, eof>> {};
+    struct grammar
+        : must<seq<sor<instruction, label, stabs_directive, stabd_directive, stabn_directive>,
+                   eof>> {};
 
     // Types selected in for parse tree
     template <typename Rule>
     using selector = parse_tree::selector<
         Rule, pegtl::parse_tree::store_content::on<
                   // top-level
-                  stabd_directive, stabs_directive,
+                  stabd_directive, stabs_directive, stabn_directive,
 
                   // array
                   array, array_name, array_type_id, array_max_index,
@@ -294,7 +316,9 @@ namespace stabs {
                   // symbols
                   stabs_directive_section_symbol, /*section_symbol,*/ symbol_name, symbol_id,
                   symbol_type_function, symbol_type_file_static, symbol_type_function_static,
-                  section_symbol_label
+                  section_symbol_label,
+                  // braces
+                  left_brace, right_brace
 
                   >>;
 
@@ -361,17 +385,19 @@ int main() {
 		//// Instruction
 		//R"(   0095 C6 2A         [ 2]   73 	ldb	#42	; D.1687,)"
 
-	 //   // Label
+	    //// Label
 		//R"(   0098                      77 Lscope1:)"
 
-        // Text segment symbol
-        R"(                             107 ;	.stabs	"var_const:S7",36,0,0,__ZL9var_const)",
-        R"(                             108;.stabs	"var_init:S7", 38, 0, 0, __ZL8var_init)",
-        R"(                             109;.stabs	"var_noinit:S7", 40, 0, 0, __ZL10var_noinit)",
-        R"(                             94 ;	    .stabs	"main:F7",36,0,0,_main)",
-        R"(                             101 ;	.stabs	"c_a:S7",36,0,0,__ZL3c_a)",
-        R"(                             105;.stabs	"var_s_local:V7", 38, 0, 0, __ZZ4mainE11var_s_local)"
+        //// Text segment symbol
+        //R"(                             107 ;	.stabs	"var_const:S7",36,0,0,__ZL9var_const)",
+        //R"(                             108;.stabs	"var_init:S7", 38, 0, 0, __ZL8var_init)",
+        //R"(                             109;.stabs	"var_noinit:S7", 40, 0, 0, __ZL10var_noinit)",
+        //R"(                             94 ;	    .stabs	"main:F7",36,0,0,_main)",
+        //R"(                             101 ;	.stabs	"c_a:S7",36,0,0,__ZL3c_a)",
+        //R"(                             105;.stabs	"var_s_local:V7", 38, 0, 0, __ZZ4mainE11var_s_local)",
 
+        R"(                             106;.stabn	192,0,0,LBB2)",
+        R"(                             107;.stabn	224,0,0,LBE2)",
 
 	};
     // clang-format on
